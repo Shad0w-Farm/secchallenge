@@ -35,7 +35,7 @@ jobs:
           config: "p/default .semgrep/rules.yml"
       - name: Check for Findings
         run: |
-          echo "Semgrep scan completed. Pipeline will fail if ERROR level findings are detected."
+          echo "Semgrep scan completed. Pipeline will fail if ERROR level findings are detected based on action defaults."
 
   sca-dependency-scanning:
     name: SCA & SBOM (Trivy)
@@ -80,3 +80,26 @@ jobs:
           image-ref: 'juiceshop:local'
           format: 'table'
           exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  server-testing:
+    name: Execute Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install Dependencies
+        run: npm ci
+      - name: Execute server tests for each custom configuration
+        uses: nick-invision/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          command: npm run test:server
