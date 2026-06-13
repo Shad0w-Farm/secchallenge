@@ -101,6 +101,8 @@ jobs:
         run: npm run package:minify --if-present || npm run build --if-present
       - name: Execute server tests for each custom configuration
         uses: nick-invision/retry@v3
+        env:
+          PATH: ${{ github.workspace }}/node_modules/.bin:${{ env.PATH }}
         with:
           timeout_minutes: 10
           max_attempts: 3
