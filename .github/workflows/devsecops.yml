@@ -104,8 +104,3 @@ jobs:
         run: npm run test:server
         env:
           PATH: ${{ github.workspace }}/node_modules/.bin:${{ env.PATH }}
-        with:
-          shell: bash
-          timeout_minutes: 10
-          max_attempts: 3
-          command: npm run test:server
