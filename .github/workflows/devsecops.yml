@@ -19,7 +19,7 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
+          base: ""
           head: HEAD
           extra_args: --debug --only-verified
 
@@ -97,8 +97,12 @@ jobs:
           cache: 'npm'
       - name: Install Dependencies
         run: npm ci
+      - name: Build and Prepare Application
+        run: npm run package:minify --if-present || npm run build --if-present
       - name: Execute server tests for each custom configuration
         uses: nick-invision/retry@v3
+        env:
+          PATH: ${{ github.workspace }}/node_modules/.bin:${{ env.PATH }}
         with:
           timeout_minutes: 10
           max_attempts: 3
