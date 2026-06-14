@@ -101,6 +101,7 @@ jobs:
       - name: Build and Prepare Application
         run: npm run package:minify --if-present || npm run build --if-present
       - name: Execute server tests for each custom configuration
+        shell: bash
         run: npm run test:server
         env:
           PATH: ${{ github.workspace }}/node_modules/.bin:${{ env.PATH }}
