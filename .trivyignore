@@ -1,0 +1,2 @@
+# Ignore Juice Shop's built-in JWT test private key
+AsymmetricPrivateKey
