@@ -1,0 +1,15 @@
+rules:
+  - id: no-eval-in-express
+    patterns:
+      - pattern: eval(...)
+    message: "Use of eval() detected. This can lead to Remote Code Execution (RCE) if user input is passed. Use safer alternatives like JSON.parse()."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+ - id: hardcoded-jwt-secret
+   patterns:
+     - pattern: |
+         $JWT.sign($PAYLOAD, "...", ...)
+   message: "Hardcoded JWT secret detected. Secrets must be loaded from environment variables (e.g., process.env.JWT_SECRET)."
+   languages: [javascript, typescript]
+   severity: ERROR
