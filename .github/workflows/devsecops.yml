@@ -8,34 +8,146 @@ on:
 
 jobs:
   secrets-scanning:
-    name: Secrets Scanning (TruffleHog)
+    name: Secrets Scanning (TruffleHog + Custom Rules)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
       - name: TruffleHog OSS
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           base: ""
           head: HEAD
-          extra_args: --debug --only-verified
+          extra_args: --debug
+          # Removed --only-verified to catch unverified patterns
+      
+      - name: Run TruffleHog with Custom Detectors
+        run: |
+          pip install trufflehog
+          trufflehog filesystem . --json --include-detectors=all > trufflehog-results.json || true
+          if grep -q '"verified": true' trufflehog-results.json; then
+            echo "❌ SECURITY FAILURE: Verified secrets detected!"
+            cat trufflehog-results.json
+            exit 1
+          fi
 
   sast-scanning:
-    name: SAST (Semgrep)
+    name: SAST (Semgrep) - Secrets & Code Execution Patterns
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+      
+      - name: Create Custom Semgrep Rules
+        run: |
+          mkdir -p .semgrep
+          cat > .semgrep/custom-security-rules.yml << 'EOF'
+          rules:
+            - id: eval-usage-detection
+              pattern-either:
+                - pattern: eval(...)
+                - pattern: eval($X)
+                - pattern: |
+                    const $FUNC = eval
+                    ...
+                    $FUNC(...)
+              message: "⚠️  CRITICAL: eval() usage detected - potential remote code execution"
+              languages: [javascript, typescript]
+              severity: ERROR
+              fix: |
+                # Replace eval with safer alternatives like JSON.parse() for JSON data
+
+            - id: config-enc-exposure
+              pattern-either:
+                - pattern: |
+                    const $VAR = config.get(...)
+                    ...
+                    eval($VAR)
+                - pattern: |
+                    eval(config.get(...))
+                - patterns:
+                    - pattern: eval($X)
+                    - metavariable-pattern:
+                        metavariable: $X
+                        patterns:
+                          - pattern: config.get(...)
+              message: "🔴 CRITICAL: config.get() + eval() combination - RCE vulnerability"
+              languages: [typescript, javascript]
+              severity: ERROR
+
+            - id: hardcoded-secrets-in-config
+              pattern-either:
+                - pattern-inside: config.*
+                  pattern: |
+                    $KEY: '...$SECRET...'
+                - pattern-inside: config.*
+                  pattern: |
+                    $KEY: "...$SECRET..."
+              metavariable-pattern:
+                metavariable: $KEY
+                patterns:
+                  - pattern-either:
+                      - pattern: password
+                      - pattern: secret
+                      - pattern: apiKey
+                      - pattern: token
+                      - pattern: credential
+                      - pattern: auth
+                      - pattern: key
+              message: "🔴 Hardcoded secret detected in config"
+              languages: [javascript, typescript, yaml]
+              severity: ERROR
+
+            - id: require-with-user-input
+              pattern-either:
+                - pattern: require($USER_INPUT)
+                - pattern: |
+                    $X = $USER_INPUT
+                    ...
+                    require($X)
+              message: "⚠️  Dynamic require() with user input - code execution risk"
+              languages: [javascript]
+              severity: ERROR
+
+            - id: config-enc-pattern
+              pattern: |
+                config.enc
+              message: "🔍 Found config.enc reference - verify no secrets are exposed via eval()"
+              languages: [typescript, javascript]
+              severity: WARNING
+          EOF
+
       - name: Run Semgrep
         uses: returntocorp/semgrep-action@v1
         with:
-          config: "p/default .semgrep/rules.yml"
-      - name: Check for Findings
+          config: |
+            p/security-audit
+            p/nodejs
+            p/owasp-top-ten
+            .semgrep/custom-security-rules.yml
+          generateSarif: true
+      
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      
+      - name: Fail on Critical Issues
         run: |
-          echo "Semgrep scan completed. Pipeline will fail if ERROR level findings are detected based on action defaults."
+          if [ -f semgrep.sarif ]; then
+            ERROR_COUNT=$(grep -c '"level": "error"' semgrep.sarif || echo 0)
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "❌ PIPELINE FAILED: Semgrep found $ERROR_COUNT critical security issues"
+              jq '.runs[0].results[] | select(.level == "error") | {message: .message.text, file: .locations[0].physicalLocation.artifactLocation.uri, line: .locations[0].physicalLocation.region.startLine}' semgrep.sarif 2>/dev/null || cat semgrep.sarif
+              exit 1
+            fi
+          fi
 
   sca-dependency-scanning:
     name: SCA & SBOM (Trivy)
@@ -45,13 +157,19 @@ jobs:
         uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner in fs mode
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true
         with:
           scan-type: 'fs'
           ignore-unfixed: true
-          format: 'table'
-          exit-code: '0'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-fs
       - name: Generate SBOM
         uses: aquasecurity/trivy-action@master
         if: always()
@@ -77,14 +195,20 @@ jobs:
         run: docker build -t juiceshop:local .
       - name: Run Trivy vulnerability scanner on image
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true
         with:
           image-ref: 'juiceshop:local'
-          format: 'table'
-          exit-code: '0'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+      - name: Upload Trivy Image SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
 
   push-to-ghcr:
     name: Push Docker Image to GHCR
